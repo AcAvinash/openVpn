@@ -39,15 +39,14 @@ echo "STEP 2 completed"
 ############################################
 echo "=== STEP 3: Adding OpenVPN Access Server repository ==="
 
-cat <<EOF >/etc/yum.repos.d/openvpn-as.repo
+sudo tee /etc/yum.repos.d/openvpn-as.repo > /dev/null <<EOF
 [openvpn-as]
 name=OpenVPN Access Server
-baseurl=https://as-repository.openvpn.net/as/alma/9/
+baseurl=https://packages.openvpn.net/as/rhel/9/
 enabled=1
 gpgcheck=1
-gpgkey=https://as-repository.openvpn.net/as-repo-public.gpg
+gpgkey=https://packages.openvpn.net/packages-repo.gpg
 EOF
-
 echo "OpenVPN repo added successfully"
 
 ############################################
