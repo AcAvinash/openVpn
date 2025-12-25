@@ -2,15 +2,6 @@
 set -euxo pipefail
 
 ############################################
-# COLORS
-############################################
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-############################################
 # LOGGING
 ############################################
 LOG_FILE="/var/log/openvpn-install.log"
@@ -19,81 +10,69 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 ############################################
 # VARIABLES
 ############################################
-INSTALL_DIR="/usr/local/src"
 OPENVPN_AS_DIR="/usr/local/openvpn_as"
 SCRIPTS="/usr/local/openvpn_as/scripts"
 
 ############################################
-# STEP 1: OS CHECK
+# STEP 1: OS CHECK (Amazon Linux 2023)
 ############################################
-echo -e "${BLUE}=== STEP 1: OS Detection ===${NC}"
-
 if [ -f /etc/os-release ]; then
   . /etc/os-release
-  echo -e "${GREEN}✔ Detected OS: $PRETTY_NAME${NC}"
+  echo "Detected OS: $PRETTY_NAME"
 else
-  echo -e "${RED}✘ OS detection failed${NC}"
+  echo "OS detection failed"
   exit 1
 fi
 
 ############################################
-# STEP 2: SYSTEM UPDATE & PACKAGES
+# STEP 2: SYSTEM UPDATE & REQUIRED PACKAGES
 ############################################
-echo -e "${BLUE}=== STEP 2: Installing required packages ===${NC}"
+echo "=== STEP 2: Installing required packages ==="
 
 dnf update -y
-dnf install -y wget tar net-tools iproute
+dnf install -y wget net-tools iproute
 
-echo -e "${GREEN}✔ STEP 2 completed${NC}"
-
-############################################
-# STEP 3: DOWNLOAD OPENVPN ACCESS SERVER
-############################################
-echo -e "${BLUE}=== STEP 3: Downloading OpenVPN Access Server ===${NC}"
-
-mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR"
-
-if [ ! -f openvpn-as-latest.tar.gz ]; then
-  echo -e "${YELLOW}⬇ Downloading OpenVPN Access Server...${NC}"
-  wget https://openvpn.net/downloads/openvpn-as-latest.tar.gz
-  echo -e "${GREEN}✔ Download completed${NC}"
-else
-  echo -e "${GREEN}✔ OpenVPN tarball already exists (skipping)${NC}"
-fi
+echo "STEP 2 completed"
 
 ############################################
-# STEP 4: EXTRACT TARBALL
+# STEP 3: ADD OPENVPN OFFICIAL REPO
 ############################################
-echo -e "${BLUE}=== STEP 4: Extracting OpenVPN tarball ===${NC}"
+echo "=== STEP 3: Adding OpenVPN Access Server repository ==="
 
-tar -xzf openvpn-as-latest.tar.gz
-cd openvpn_as*
+cat <<EOF >/etc/yum.repos.d/openvpn-as.repo
+[openvpn-as]
+name=OpenVPN Access Server
+baseurl=https://as-repository.openvpn.net/as/alma/9/
+enabled=1
+gpgcheck=1
+gpgkey=https://as-repository.openvpn.net/as-repo-public.gpg
+EOF
 
-echo -e "${GREEN}✔ Extraction completed${NC}"
-
-############################################
-# STEP 5: INSTALL OPENVPN ACCESS SERVER
-############################################
-echo -e "${BLUE}=== STEP 5: Installing OpenVPN Access Server ===${NC}"
-
-./asinstall.sh --yes
-
-echo -e "${GREEN}✔ Installation completed${NC}"
+echo "OpenVPN repo added successfully"
 
 ############################################
-# STEP 6: SERVICE STATUS CHECK
+# STEP 4: INSTALL OPENVPN ACCESS SERVER
 ############################################
-echo -e "${BLUE}=== STEP 6: Checking OpenVPN service ===${NC}"
+echo "=== STEP 4: Installing OpenVPN Access Server ==="
+
+dnf install -y openvpn-as
+
+echo "OpenVPN Access Server installation completed"
+
+############################################
+# STEP 5: SERVICE STATUS CHECK
+############################################
+echo "=== STEP 5: Checking OpenVPN service ==="
 
 systemctl enable openvpnas
+systemctl start openvpnas
 systemctl status openvpnas --no-pager
 
 ############################################
 # FINAL
 ############################################
-echo -e "${GREEN}==========================================${NC}"
-echo -e "${GREEN} OpenVPN Access Server INSTALL DONE ${NC}"
-echo -e "${YELLOW} Admin URL : https://<PUBLIC-IP>:943/admin ${NC}"
-echo -e "${YELLOW} User  URL : https://<PUBLIC-IP>:943/ ${NC}"
-echo -e "${GREEN}==========================================${NC}"
+echo "=========================================="
+echo " OpenVPN Access Server INSTALL DONE "
+echo " Admin URL : https://<PUBLIC-IP>:943/admin "
+echo " User  URL : https://<PUBLIC-IP>:943/ "
+echo "=========================================="
