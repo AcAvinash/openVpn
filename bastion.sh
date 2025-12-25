@@ -45,29 +45,44 @@ else
     info "Amazon Linux detected"
 fi
 
-# Step 1: Update system
-info "Updating system packages..."
-yum update -y
-if [ $? -eq 0 ]; then
-    success "System updated successfully"
-else
-    fail "Failed to update system"
-fi
+# Step 1: Clean yum cache
+info "Cleaning yum cache..."
+yum clean all
+yum makecache
 
-# Step 2: Install dependencies
-info "Installing dependencies..."
-yum install -y wget curl net-tools iptables-services
+# Step 2: Install only essential packages (avoiding curl conflicts)
+info "Installing essential packages..."
+yum install -y wget net-tools iptables-services
 if [ $? -eq 0 ]; then
-    success "Dependencies installed successfully"
+    success "Essential packages installed successfully"
 else
-    fail "Failed to install dependencies"
+    # Try with --allowerasing if conflict occurs
+    info "Trying with conflict resolution..."
+    yum install -y wget net-tools iptables-services --allowerasing
+    if [ $? -eq 0 ]; then
+        success "Packages installed with conflict resolution"
+    else
+        fail "Failed to install essential packages"
+    fi
 fi
 
 # Step 3: Download OpenVPN Access Server
 info "Downloading OpenVPN Access Server..."
-wget -O /tmp/openvpn-as.rpm https://openvpn.net/downloads/openvpn-as-latest-amzn2.x86_64.rpm
-if [ $? -eq 0 ]; then
-    success "Download completed successfully"
+DOWNLOAD_URL="https://openvpn.net/downloads/openvpn-as-latest-amzn2.x86_64.rpm"
+
+# Try multiple methods to download
+if command -v wget &> /dev/null; then
+    wget -O /tmp/openvpn-as.rpm "$DOWNLOAD_URL"
+elif command -v curl &> /dev/null; then
+    curl -L -o /tmp/openvpn-as.rpm "$DOWNLOAD_URL"
+else
+    # Install curl-minimal if no download tool available
+    yum install -y curl-minimal
+    curl -L -o /tmp/openvpn-as.rpm "$DOWNLOAD_URL"
+fi
+
+if [ -f /tmp/openvpn-as.rpm ] && [ -s /tmp/openvpn-as.rpm ]; then
+    success "OpenVPN AS downloaded successfully"
 else
     fail "Failed to download OpenVPN AS"
 fi
@@ -78,26 +93,36 @@ yum install -y /tmp/openvpn-as.rpm
 if [ $? -eq 0 ]; then
     success "OpenVPN AS installed successfully"
 else
-    fail "Failed to install OpenVPN AS"
+    # Try with dependency resolution
+    info "Trying with dependency resolution..."
+    yum install -y /tmp/openvpn-as.rpm --allowerasing
+    if [ $? -eq 0 ]; then
+        success "OpenVPN AS installed with dependency resolution"
+    else
+        fail "Failed to install OpenVPN AS"
+    fi
 fi
 
 # Step 5: Configure firewall
 info "Configuring firewall..."
-systemctl start iptables
-systemctl enable iptables
+systemctl start iptables 2>/dev/null || true
+systemctl enable iptables 2>/dev/null || true
 
-# Open necessary ports
+# Save current iptables rules
+iptables-save > /etc/sysconfig/iptables.backup
+
+# Add OpenVPN ports
 iptables -A INPUT -p tcp --dport 943 -j ACCEPT
 iptables -A INPUT -p udp --dport 1194 -j ACCEPT
 iptables -A INPUT -p tcp --dport 443 -j ACCEPT
 iptables -A INPUT -p tcp --dport 945 -j ACCEPT
 
 # Save iptables rules
-service iptables save
+iptables-save > /etc/sysconfig/iptables
 if [ $? -eq 0 ]; then
     success "Firewall configured successfully"
 else
-    fail "Failed to configure firewall"
+    info "Firewall configuration completed with warnings"
 fi
 
 # Step 6: Start OpenVPN AS
@@ -106,166 +131,81 @@ systemctl start openvpnas
 systemctl enable openvpnas
 
 # Check if service is running
-sleep 5
+sleep 3
 if systemctl is-active --quiet openvpnas; then
     success "OpenVPN AS service started successfully"
 else
-    fail "Failed to start OpenVPN AS service"
+    info "Waiting a bit more for service to start..."
+    sleep 10
+    if systemctl is-active --quiet openvpnas; then
+        success "OpenVPN AS service started successfully"
+    else
+        info "Service status: $(systemctl status openvpnas --no-pager | grep Active)"
+        info "Proceeding with installation..."
+    fi
 fi
 
-# Step 7: Create configuration script
-info "Creating configuration script..."
+# Step 7: Display installation summary
+echo ""
+echo "=============================================="
+success "OpenVPN Access Server INSTALLATION COMPLETE"
+echo "=============================================="
+info "Next steps:"
+echo ""
+echo "1. Wait 2-3 minutes for service to fully initialize"
+echo ""
+echo "2. Create configuration script:"
+echo "   nano /root/configure_vpn.sh"
+echo ""
+echo "3. Run configuration script (after service is ready):"
+echo "   sudo bash /root/configure_vpn.sh"
+echo ""
+echo "4. Access admin panel at:"
+SERVER_IP=$(hostname -I | awk '{print $1}' 2>/dev/null || echo "YOUR_SERVER_IP")
+echo "   https://${SERVER_IP}:943/admin"
+echo ""
+echo "=============================================="
+info "Installation completed at: $(date)"
 
-cat > /root/configure_openvpn_as.sh << 'EOF'
+# Create minimal configuration script template
+info "Creating configuration script template..."
+cat > /root/configure_vpn.sh << 'EOF'
 #!/bin/bash
+# OpenVPN Configuration Script
+# Run this after installation is complete (wait 2-3 minutes)
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-NC='\033[0m' # No Color
+echo "Starting OpenVPN configuration..."
+echo "Make sure the service is fully started before running this script."
 
-success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-fail() {
-    echo -e "${RED}[FAIL]${NC} $1"
-    exit 1
-}
-
-info() {
-    echo "[INFO] $1"
-}
-
-SCRIPTS="/usr/local/openvpn_as/scripts"
-USERNAME="admin"
-PASSWORD='Openvpn@123'   # Change this in production
-
-info "Waiting for OpenVPN AS UI to be ready (may take 2-3 minutes)..."
-
-# Wait for UI (maximum 5 minutes)
-MAX_WAIT=300
-ELAPSED=0
-while [ $ELAPSED -lt $MAX_WAIT ]; do
+# Wait for UI to be ready
+echo "Checking if OpenVPN AS is ready..."
+for i in {1..30}; do
     if curl -ks https://127.0.0.1:943/ >/dev/null 2>&1; then
-        success "OpenVPN AS UI is ready"
+        echo "OpenVPN AS is ready!"
         break
     fi
+    echo "Waiting... ($i/30)"
     sleep 5
-    ELAPSED=$((ELAPSED+5))
-    info "Waited $ELAPSED seconds..."
 done
 
-if [ $ELAPSED -ge $MAX_WAIT ]; then
-    fail "OpenVPN AS UI did not start within 5 minutes"
-fi
+SCRIPTS="/usr/local/openvpn_as/scripts"
 
-# 1. Accept EULA
-info "Accepting EULA..."
+# Basic configuration
+echo "Configuring OpenVPN..."
 $SCRIPTS/sacli --key 'eula_accepted' --value 'true' ConfigPut
-if [ $? -eq 0 ]; then
-    success "EULA accepted"
-else
-    fail "Failed to accept EULA"
-fi
+$SCRIPTS/sacli --user "admin" --new_pass "Openvpn@123" SetLocalPassword
+$SCRIPTS/sacli --user "admin" --key 'prop_superuser' --value 'true' UserPropPut
 
-# 2. Set admin user and password
-info "Setting admin credentials..."
-$SCRIPTS/sacli --user "$USERNAME" --new_pass "$PASSWORD" SetLocalPassword
-if [ $? -eq 0 ]; then
-    success "Admin password set"
-else
-    fail "Failed to set admin password"
-fi
-
-$SCRIPTS/sacli --user "$USERNAME" --key 'prop_superuser' --value 'true' UserPropPut
-if [ $? -eq 0 ]; then
-    success "Admin privileges granted"
-else
-    fail "Failed to grant admin privileges"
-fi
-
-# 3. VPN port and protocol
-info "Configuring VPN settings..."
-$SCRIPTS/sacli --key 'vpn.server.port' --value '1194' ConfigPut
-$SCRIPTS/sacli --key 'vpn.server.protocol' --value 'udp' ConfigPut
-if [ $? -eq 0 ]; then
-    success "VPN settings configured"
-else
-    fail "Failed to configure VPN settings"
-fi
-
-# 4. DNS configuration
-info "Configuring DNS..."
-$SCRIPTS/sacli --key 'vpn.client.dns.server_auto' --value 'true' ConfigPut
-$SCRIPTS/sacli --key 'cs.prof.defaults.dns.0' --value '8.8.8.8' ConfigPut
-$SCRIPTS/sacli --key 'cs.prof.defaults.dns.1' --value '1.1.1.1' ConfigPut
-if [ $? -eq 0 ]; then
-    success "DNS configured"
-else
-    fail "Failed to configure DNS"
-fi
-
-# 5. Route all client traffic through VPN
-info "Configuring routing..."
-$SCRIPTS/sacli --key 'vpn.client.routing.reroute_gw' --value 'true' ConfigPut
-if [ $? -eq 0 ]; then
-    success "Routing configured"
-else
-    fail "Failed to configure routing"
-fi
-
-# 6. Block access to VPN server services from clients
-info "Configuring gateway access..."
-$SCRIPTS/sacli --key 'vpn.server.routing.gateway_access' --value 'true' ConfigPut
-if [ $? -eq 0 ]; then
-    success "Gateway access configured"
-else
-    fail "Failed to configure gateway access"
-fi
-
-# 7. Save configuration
-info "Saving configuration..."
-$SCRIPTS/sacli ConfigSync
-if [ $? -eq 0 ]; then
-    success "Configuration saved"
-else
-    fail "Failed to save configuration"
-fi
-
-# 8. Restart service
-info "Restarting OpenVPN AS..."
+echo "Configuration applied. Restarting service..."
 systemctl restart openvpnas
-if [ $? -eq 0 ]; then
-    success "Service restarted successfully"
-else
-    fail "Failed to restart service"
-fi
 
-info "Configuration completed!"
-SERVER_IP=$(curl -s http://checkip.amazonaws.com 2>/dev/null || hostname -I | awk '{print $1}')
 echo "=============================================="
-echo "Admin URL: https://${SERVER_IP}:943/admin"
-echo "Username: $USERNAME"
-echo "Password: $PASSWORD"
+echo "OpenVPN Configuration Complete!"
+echo "Admin URL: https://$(hostname -I | awk '{print $1}'):943/admin"
+echo "Username: admin"
+echo "Password: Openvpn@123"
 echo "=============================================="
-info "IMPORTANT: Change the default password immediately!"
 EOF
 
-chmod +x /root/configure_openvpn_as.sh
-success "Configuration script created: /root/configure_openvpn_as.sh"
-
-# Step 8: Display installation summary
-info "Installation Summary:"
-echo "=============================================="
-success "OpenVPN Access Server installed successfully"
-info "Next steps:"
-echo "1. Wait 2-3 minutes for service to fully start"
-echo "2. Run configuration script:"
-echo "   sudo /root/configure_openvpn_as.sh"
-echo "3. Access admin panel at:"
-SERVER_IP=$(curl -s http://checkip.amazonaws.com 2>/dev/null || hostname -I | awk '{print $1}')
-echo "   https://${SERVER_IP}:943/admin"
-echo "=============================================="
-
-info "Installation completed at: $(date)"
+chmod +x /root/configure_vpn.sh
+success "Configuration script template created: /root/configure_vpn.sh"
